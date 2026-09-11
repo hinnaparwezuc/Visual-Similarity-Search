@@ -1,5 +1,3 @@
-# visual-similarity-search
-
 # Visual Similarity Search
 
 Find visually similar images using CLIP embeddings and approximate nearest neighbor search.
