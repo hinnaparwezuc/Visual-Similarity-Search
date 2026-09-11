@@ -4,7 +4,7 @@ Find visually similar images using CLIP embeddings and approximate nearest neigh
 
 ## Problem
 
-Given an image, find other images in a collection that look similar or share semantic content.
+Given an image, find other images in a collection that appear similar or share semantic content.
 
 ## Status
 
