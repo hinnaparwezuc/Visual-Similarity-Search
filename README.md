@@ -4,7 +4,7 @@ Find visually similar images using CLIP embeddings and approximate nearest neigh
 
 ## Problem
 
-Given an image, find other images in a collection that look similar or share semantic content — the core idea behind visual search features like Pinterest's "similar pins."
+Given an image, find other images in a collection that look similar or share semantic content.
 
 ## Status
 
