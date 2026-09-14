@@ -1,0 +1,7 @@
+torch>=2.0.0
+open_clip_torch>=2.24.0
+faiss-cpu>=1.7.4
+streamlit>=1.32.0
+Pillow>=10.0.0
+numpy>=1.24.0
+tqdm>=4.66.0
