@@ -1,7 +1,3 @@
-"""
-CLIPEmbedder:  Wrapper around open_clip for encoding images and text
-into a shared embedding space, ready for cosine-similarity search.
-"""
 from __future__ import annotations
 
 from pathlib import Path
