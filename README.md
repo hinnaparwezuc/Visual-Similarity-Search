@@ -39,7 +39,7 @@ visual-similarity-search/
 ├── data/
 │   └── images/
 ├── src/
-├── embedder.py
+│   └── embedder.py
 ├── requirements.txt
 ├── .gitignore
 └── README.md
