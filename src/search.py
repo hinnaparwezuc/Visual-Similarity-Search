@@ -123,7 +123,7 @@ def main() -> None:
     args = parse_arguments()
     search_engine = ImageSearchEngine(args.index_directory)
 
-    if args.text:
+    if args.text is not None:
         results = search_engine.search_text(args.text, args.top_k)
     else:
         results = search_engine.search_image(args.image, args.top_k)
