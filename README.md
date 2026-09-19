@@ -1,6 +1,6 @@
 # Visual Similarity Search
 
-Search a local image collection by text description or by example image, using
+Search from a local image collection by text description or by example image, using
 [OpenCLIP](https://github.com/mlfoundations/open_clip) embeddings and a
 [FAISS](https://github.com/facebookresearch/faiss) vector index.
 
