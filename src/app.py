@@ -6,8 +6,10 @@ from pathlib import Path
 
 import streamlit as st
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
+# app.py lives in src/; the index and images live under the repo root.
+SOURCE_DIRECTORY = Path(__file__).resolve().parent
+PROJECT_ROOT = SOURCE_DIRECTORY.parent
+sys.path.insert(0, str(SOURCE_DIRECTORY))
 
 from search import ImageSearchEngine
 
@@ -34,9 +36,14 @@ def resolve_image_path(stored_path: str) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
-def render_results(results: list[dict], columns_per_row: int = 4) -> None:
+def render_results(
+    results: list[dict],
+    min_score: float = 0.0,
+    columns_per_row: int = 4,
+) -> None:
+    results = [r for r in results if r["similarity_score"] >= min_score]
     if not results:
-        st.warning("No results were returned.")
+        st.warning("No results above the minimum similarity.")
         return
 
     for row_start in range(0, len(results), columns_per_row):
@@ -69,6 +76,14 @@ with st.sidebar:
         value=str(DEFAULT_INDEX_DIRECTORY),
     )
     top_k = st.slider("Results to return", min_value=1, max_value=24, value=8)
+    min_score = st.slider(
+        "Minimum similarity",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.01,
+        help="Hide results scoring below this value.",
+    )
 
 try:
     search_engine = load_search_engine(index_directory)
@@ -104,7 +119,7 @@ with text_tab:
         else:
             with st.spinner("Searching..."):
                 results = search_engine.search_text(query, top_k)
-            render_results(results)
+            render_results(results, min_score)
 
 with image_tab:
     uploaded_file = st.file_uploader(
@@ -127,6 +142,6 @@ with image_tab:
             try:
                 with st.spinner("Searching..."):
                     results = search_engine.search_image(temporary_path, top_k)
-                render_results(results)
+                render_results(results, min_score)
             finally:
                 temporary_path.unlink(missing_ok=True)
