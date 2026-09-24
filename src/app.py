@@ -15,6 +15,7 @@ from search import ImageSearchEngine
 
 
 DEFAULT_INDEX_DIRECTORY = PROJECT_ROOT / "data" / "index"
+EXACT_MATCH_THRESHOLD = 0.999
 
 
 st.set_page_config(
@@ -85,6 +86,10 @@ with st.sidebar:
         help="Hide results scoring below this value.",
     )
 
+    # The engine is cached, so a rebuilt index isn't picked up automatically.
+    if st.button("Reload index", help="Use after re-running indexer.py."):
+        load_search_engine.clear()
+
 try:
     search_engine = load_search_engine(index_directory)
 except FileNotFoundError:
@@ -132,6 +137,13 @@ with image_tab:
         with preview_column:
             st.image(uploaded_file, caption="Query image", use_container_width=True)
 
+        hide_exact = st.checkbox(
+            "Hide exact matches",
+            value=True,
+            help="If this image is already in your collection, "
+            "leave it out of its own results.",
+        )
+
         if st.button("Find similar", key="image_search", type="primary"):
             suffix = Path(uploaded_file.name).suffix or ".png"
 
@@ -141,7 +153,17 @@ with image_tab:
 
             try:
                 with st.spinner("Searching..."):
-                    results = search_engine.search_image(temporary_path, top_k)
-                render_results(results, min_score)
+                    # Uploads arrive as temp files, so the path-based
+                    # self-match filter in search.py can't recognize them.
+                    # Fetch one extra and drop near-perfect scores instead.
+                    results = search_engine.search_image(
+                        temporary_path, top_k + 1 if hide_exact else top_k
+                    )
+                if hide_exact:
+                    results = [
+                        r for r in results
+                        if r["similarity_score"] < EXACT_MATCH_THRESHOLD
+                    ]
+                render_results(results[:top_k], min_score)
             finally:
                 temporary_path.unlink(missing_ok=True)
