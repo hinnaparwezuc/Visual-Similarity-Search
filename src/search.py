@@ -8,10 +8,11 @@ from pathlib import Path
 import faiss
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+SOURCE_DIRECTORY = Path(__file__).resolve().parent
+PROJECT_ROOT = SOURCE_DIRECTORY.parent
+sys.path.insert(0, str(SOURCE_DIRECTORY))
 
-from embedder import CLIPEmbedder
+from embedder import DEFAULT_MODEL_NAME, DEFAULT_PRETRAINED, CLIPEmbedder
 
 
 class ImageSearchEngine:
@@ -29,13 +30,30 @@ class ImageSearchEngine:
             metadata_path.read_text(encoding="utf-8")
         )
         self.image_paths = self.metadata["images"]
-        self.embedder = CLIPEmbedder()
 
         if self.index.ntotal != len(self.image_paths):
             raise ValueError(
                 "The FAISS index and image metadata contain different "
                 "numbers of images."
             )
+
+        # Queries must be embedded with the same model that built the index,
+        # otherwise the vectors live in different spaces.
+        self.embedder = CLIPEmbedder(
+            model_name=self.metadata.get("model_name", DEFAULT_MODEL_NAME),
+            pretrained=self.metadata.get("pretrained", DEFAULT_PRETRAINED),
+        )
+
+        if self.embedder.dim != self.index.d:
+            raise ValueError(
+                f"Model produces {self.embedder.dim}-dimensional vectors but "
+                f"the index holds {self.index.d}-dimensional vectors. "
+                "Rebuild the index with `python src/indexer.py`."
+            )
+
+    def _resolve(self, stored_path: str) -> Path:
+        path = Path(stored_path)
+        return (path if path.is_absolute() else PROJECT_ROOT / path).resolve()
 
     def search_text(self, query: str, top_k: int = 5) -> list[dict]:
         """Find images that are semantically similar to a text query."""
@@ -46,13 +64,28 @@ class ImageSearchEngine:
         self,
         image_path: Path,
         top_k: int = 5,
+        exclude_self: bool = True,
     ) -> list[dict]:
-        """Find images that are visually similar to a query image."""
+        """Find images that are visually similar to a query image.
+
+        If the query image is itself part of the index, it is left out of
+        the results (it would always be the top match with score 1.0).
+        """
         if not image_path.exists():
             raise FileNotFoundError(f"Query image not found: {image_path}")
 
         query_embedding = self.embedder.encode_images([image_path])
-        return self._search(query_embedding, top_k)
+
+        if not exclude_self:
+            return self._search(query_embedding, top_k)
+
+        query_resolved = image_path.resolve()
+        results = self._search(query_embedding, top_k + 1)
+        results = [
+            r for r in results
+            if self._resolve(r["image_path"]) != query_resolved
+        ]
+        return results[:top_k]
 
     def _search(
         self,
@@ -115,6 +148,11 @@ def parse_arguments() -> argparse.Namespace:
         default=PROJECT_ROOT / "data" / "index",
         help="Directory containing the FAISS index and metadata.",
     )
+    parser.add_argument(
+        "--include-self",
+        action="store_true",
+        help="With --image, keep the query image in results if it is indexed.",
+    )
 
     return parser.parse_args()
 
@@ -126,7 +164,9 @@ def main() -> None:
     if args.text is not None:
         results = search_engine.search_text(args.text, args.top_k)
     else:
-        results = search_engine.search_image(args.image, args.top_k)
+        results = search_engine.search_image(
+            args.image, args.top_k, exclude_self=not args.include_self
+        )
 
     print(json.dumps(results, indent=2))
 

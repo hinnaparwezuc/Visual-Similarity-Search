@@ -8,11 +8,12 @@ from pathlib import Path
 import faiss
 import numpy as np
 
-# Allows this file to import embedder.py from the project root.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
+# src/ holds embedder.py; the repo root holds data/.
+SOURCE_DIRECTORY = Path(__file__).resolve().parent
+PROJECT_ROOT = SOURCE_DIRECTORY.parent
+sys.path.insert(0, str(SOURCE_DIRECTORY))
 
-from embedder import CLIPEmbedder
+from embedder import DEFAULT_MODEL_NAME, DEFAULT_PRETRAINED, CLIPEmbedder
 
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -39,24 +40,42 @@ def find_images(image_directory: Path) -> list[Path]:
     return image_paths
 
 
+def to_stored_path(path: Path) -> str:
+    """Store paths relative to the project root when possible."""
+    resolved = path.resolve()
+    if resolved.is_relative_to(PROJECT_ROOT):
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    return str(resolved)
+
+
 def build_index(
     image_directory: Path,
     output_directory: Path,
     batch_size: int = 32,
+    model_name: str = DEFAULT_MODEL_NAME,
+    pretrained: str = DEFAULT_PRETRAINED,
 ) -> None:
     """Generate image embeddings and save them in a FAISS index."""
     image_paths = find_images(image_directory)
 
     print(f"Found {len(image_paths)} images.")
-    print("Loading CLIP model...")
+    print(f"Loading CLIP model {model_name} ({pretrained})...")
 
-    embedder = CLIPEmbedder()
+    embedder = CLIPEmbedder(model_name=model_name, pretrained=pretrained)
 
-    print("Generating image embeddings...")
-    embeddings = embedder.encode_images(
+    embeddings, kept_paths, skipped = embedder.encode_image_files(
         image_paths,
         batch_size=batch_size,
     )
+
+    if skipped:
+        print(f"Skipped {len(skipped)} unreadable image(s):")
+        for path, error in skipped:
+            print(f"  - {path}: {error}")
+
+    if not kept_paths:
+        raise ValueError("None of the images could be read; no index built.")
+
     embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
 
     # CLIPEmbedder already normalizes the vectors. Inner-product search
@@ -72,14 +91,11 @@ def build_index(
     faiss.write_index(index, str(index_path))
 
     metadata = {
-        "image_count": len(image_paths),
+        "model_name": model_name,
+        "pretrained": pretrained,
+        "image_count": len(kept_paths),
         "embedding_dimension": int(embeddings.shape[1]),
-        "images": [
-            str(path.resolve().relative_to(PROJECT_ROOT))
-            if path.resolve().is_relative_to(PROJECT_ROOT)
-            else str(path.resolve())
-            for path in image_paths
-        ],
+        "images": [to_stored_path(path) for path in kept_paths],
     }
 
     metadata_path.write_text(
@@ -87,6 +103,7 @@ def build_index(
         encoding="utf-8",
     )
 
+    print(f"Indexed {len(kept_paths)} images.")
     print(f"Saved FAISS index to: {index_path}")
     print(f"Saved image metadata to: {metadata_path}")
 
@@ -113,6 +130,16 @@ def parse_arguments() -> argparse.Namespace:
         default=32,
         help="Number of images processed in each batch.",
     )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL_NAME,
+        help="OpenCLIP model architecture.",
+    )
+    parser.add_argument(
+        "--pretrained",
+        default=DEFAULT_PRETRAINED,
+        help="OpenCLIP pretrained weights tag.",
+    )
     return parser.parse_args()
 
 
@@ -123,4 +150,6 @@ if __name__ == "__main__":
         image_directory=args.images,
         output_directory=args.output,
         batch_size=args.batch_size,
+        model_name=args.model,
+        pretrained=args.pretrained,
     )
