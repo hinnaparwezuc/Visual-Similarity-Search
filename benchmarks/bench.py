@@ -169,3 +169,49 @@ def benchmark(index, db, queries, k, truth, labels=None, warmup=5):
     if labels is not None:
         out["label_acc_at_k"] = round(label_accuracy(results, labels), 4)
     return out
+# ----------------------------------------------------------------------
+# 4. RUN
+# ----------------------------------------------------------------------
+
+K = 3   # top-3, to match how you report accuracy
+
+INDEXES = [
+    FlatIndex(),
+    FaissFlatIP(),
+    FaissHNSW(M=32, ef_search=16),
+    FaissHNSW(M=32, ef_search=64),
+    FaissHNSW(M=32, ef_search=256),
+    # YourHNSW(),   <- add here when you write it
+]
+
+
+def main():
+    db, queries, labels = load_data()
+    print(f"db={db.shape}  queries={queries.shape}  k={K}\n")
+
+    truth = exact_neighbors(db, queries, K)
+
+    rows = []
+    for idx in INDEXES:
+        try:
+            rows.append(benchmark(idx, db, queries, K, truth, labels))
+        except ImportError as e:
+            print(f"skipping {idx.name}: {e}")
+
+    cols = ["index", "build_time_s", "build_mem_mb", "recall_at_k",
+            "label_acc_at_k", "p50_ms", "p95_ms"]
+    cols = [c for c in cols if any(c in r for r in rows)]
+    width = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in cols}
+
+    print(" | ".join(c.ljust(width[c]) for c in cols))
+    print("-+-".join("-" * width[c] for c in cols))
+    for r in rows:
+        print(" | ".join(str(r.get(c, "")).ljust(width[c]) for c in cols))
+
+    with open("results.json", "w") as f:
+        json.dump(rows, f, indent=2)
+    print("\nsaved -> results.json")
+
+
+if __name__ == "__main__":
+    main()
