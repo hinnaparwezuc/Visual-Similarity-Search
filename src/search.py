@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import faiss
@@ -13,9 +14,21 @@ PROJECT_ROOT = SOURCE_DIRECTORY.parent
 sys.path.insert(0, str(SOURCE_DIRECTORY))
 
 from embedder import DEFAULT_MODEL_NAME, DEFAULT_PRETRAINED, CLIPEmbedder
+from hnsw import HNSW
+
+BACKENDS = ("flat", "hnsw")
+HNSW_FILENAME = "hnsw.pkl"
 
 
 class ImageSearchEngine:
+    """Search an image index by text or by example image.
+
+    Two backends are available per query:
+      "flat"  exact search with FAISS IndexFlatIP (always available)
+      "hnsw"  approximate search with the graph in hnsw.py (available when
+              the index was built with --hnsw or --hnsw-only)
+    """
+
     def __init__(self, index_directory: Path):
         index_path = index_directory / "images.faiss"
         metadata_path = index_directory / "metadata.json"
@@ -51,20 +64,63 @@ class ImageSearchEngine:
                 "Rebuild the index with `python src/indexer.py`."
             )
 
+        # The HNSW graph is optional. If it's missing or out of date, exact
+        # search still works; asking for HNSW explains how to build it.
+        self.hnsw: HNSW | None = None
+        self.hnsw_unavailable_reason = (
+            "No HNSW index found. Build one with "
+            "`python src/indexer.py --hnsw-only`."
+        )
+        hnsw_path = index_directory / HNSW_FILENAME
+        if hnsw_path.exists():
+            # hnsw.pkl is a pickle: only load files you built yourself.
+            graph = HNSW.load(hnsw_path)
+            if graph.ntotal == self.index.ntotal and graph.dim == self.index.d:
+                self.hnsw = graph
+            else:
+                self.hnsw_unavailable_reason = (
+                    f"The HNSW index holds {graph.ntotal} images but the main "
+                    f"index holds {self.index.ntotal}, so it is out of date. "
+                    "Rebuild it with `python src/indexer.py --hnsw-only`."
+                )
+
+        # FAISS's first search pays one-off setup costs (thread pool start,
+        # etc.). Run one throwaway query now so the first timing reported
+        # to the user reflects the real lookup cost.
+        warmup = np.zeros((1, self.index.d), dtype=np.float32)
+        warmup[0, 0] = 1.0
+        self.index.search(warmup, 1)
+        if self.hnsw is not None:
+            self.hnsw.search(warmup[0], 1)
+
+        self.last_search_ms = 0.0
+
+    @property
+    def has_hnsw(self) -> bool:
+        return self.hnsw is not None
+
     def _resolve(self, stored_path: str) -> Path:
         path = Path(stored_path)
         return (path if path.is_absolute() else PROJECT_ROOT / path).resolve()
 
-    def search_text(self, query: str, top_k: int = 5) -> list[dict]:
+    def search_text(
+        self,
+        query: str,
+        top_k: int = 5,
+        backend: str = "flat",
+        ef_search: int | None = None,
+    ) -> list[dict]:
         """Find images that are semantically similar to a text query."""
         query_embedding = self.embedder.encode_text([query])
-        return self._search(query_embedding, top_k)
+        return self._search(query_embedding, top_k, backend, ef_search)
 
     def search_image(
         self,
         image_path: Path,
         top_k: int = 5,
         exclude_self: bool = True,
+        backend: str = "flat",
+        ef_search: int | None = None,
     ) -> list[dict]:
         """Find images that are visually similar to a query image.
 
@@ -77,10 +133,10 @@ class ImageSearchEngine:
         query_embedding = self.embedder.encode_images([image_path])
 
         if not exclude_self:
-            return self._search(query_embedding, top_k)
+            return self._search(query_embedding, top_k, backend, ef_search)
 
         query_resolved = image_path.resolve()
-        results = self._search(query_embedding, top_k + 1)
+        results = self._search(query_embedding, top_k + 1, backend, ef_search)
         results = [
             r for r in results
             if self._resolve(r["image_path"]) != query_resolved
@@ -91,9 +147,15 @@ class ImageSearchEngine:
         self,
         query_embedding: np.ndarray,
         top_k: int,
+        backend: str = "flat",
+        ef_search: int | None = None,
     ) -> list[dict]:
         if top_k < 1:
             raise ValueError("top_k must be at least 1.")
+        if backend not in BACKENDS:
+            raise ValueError(
+                f"Unknown backend {backend!r}; choose one of {BACKENDS}."
+            )
 
         top_k = min(top_k, self.index.ntotal)
         query_embedding = np.ascontiguousarray(
@@ -101,11 +163,30 @@ class ImageSearchEngine:
             dtype=np.float32,
         )
 
-        scores, indices = self.index.search(query_embedding, top_k)
+        # Only the index lookup is timed, not CLIP encoding, so the number
+        # compares the two backends rather than the model.
+        start = time.perf_counter()
+
+        if backend == "hnsw":
+            if self.hnsw is None:
+                raise ValueError(self.hnsw_unavailable_reason)
+            if ef_search is not None:
+                self.hnsw.ef_search = ef_search
+            query = query_embedding[0]
+            ids = self.hnsw.search(query, top_k)
+            # The graph returns ids only; vectors are unit length, so the
+            # dot product is the same cosine score the flat index reports.
+            scores = self.hnsw.vectors[ids] @ query
+            pairs = zip(scores, ids)
+        else:
+            scores, indices = self.index.search(query_embedding, top_k)
+            pairs = zip(scores[0], indices[0])
+
+        self.last_search_ms = (time.perf_counter() - start) * 1000
 
         results = []
 
-        for score, index_position in zip(scores[0], indices[0]):
+        for score, index_position in pairs:
             if index_position == -1:
                 continue
 
@@ -149,6 +230,19 @@ def parse_arguments() -> argparse.Namespace:
         help="Directory containing the FAISS index and metadata.",
     )
     parser.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default="flat",
+        help="flat = exact FAISS search; hnsw = approximate search with "
+             "src/hnsw.py (build it with `indexer.py --hnsw`).",
+    )
+    parser.add_argument(
+        "--ef-search",
+        type=int,
+        default=None,
+        help="HNSW candidate pool size: higher is more accurate but slower.",
+    )
+    parser.add_argument(
         "--include-self",
         action="store_true",
         help="With --image, keep the query image in results if it is indexed.",
@@ -162,13 +256,23 @@ def main() -> None:
     search_engine = ImageSearchEngine(args.index_directory)
 
     if args.text is not None:
-        results = search_engine.search_text(args.text, args.top_k)
+        results = search_engine.search_text(
+            args.text, args.top_k, args.backend, args.ef_search
+        )
     else:
         results = search_engine.search_image(
-            args.image, args.top_k, exclude_self=not args.include_self
+            args.image,
+            args.top_k,
+            exclude_self=not args.include_self,
+            backend=args.backend,
+            ef_search=args.ef_search,
         )
 
     print(json.dumps(results, indent=2))
+    print(
+        f"{args.backend} index lookup: {search_engine.last_search_ms:.2f} ms",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

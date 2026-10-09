@@ -1,9 +1,13 @@
 # Visual Similarity Search
 
-Search from a local image collection by text description or by example image, using
-[OpenCLIP](https://github.com/mlfoundations/open_clip) embeddings and a
-[FAISS](https://github.com/facebookresearch/faiss) vector index. Use it from the
-command line or through a Streamlit web app.
+![Tests](https://github.com/hinnaparwezuc/Visual-Similarity-Search/actions/workflows/tests.yml/badge.svg)
+
+Search a local image collection by text description or by example image, and
+find near-duplicate photos, using [OpenCLIP](https://github.com/mlfoundations/open_clip)
+embeddings and a [FAISS](https://github.com/facebookresearch/faiss) vector index.
+Includes an HNSW approximate-search index written from scratch, with a
+benchmark against FAISS. Use it from the command line or through a Streamlit
+web app.
 
 ## How It Works
 
@@ -15,12 +19,15 @@ together. Searching is then just a nearest-neighbour lookup.
    feature vectors for images or text.
 2. `indexer.py` embeds every image in a directory and writes a FAISS index plus a
    metadata file mapping index positions back to file paths. The metadata also
-   records which model built the index.
+   records which model built the index and each file's size and modification
+   time, so later runs can update the index incrementally.
 3. `search.py` embeds your query with that same model, searches the index by
    inner product (which equals cosine similarity for normalized vectors), and
    returns ranked results.
-4. `app.py` wraps the search engine in a Streamlit interface.
-5. `hnsw.py` is a from-scratch implementation of Hierarchical Navigable Small
+4. `duplicates.py` compares every indexed image against every other and groups
+   the ones above a similarity threshold.
+5. `app.py` wraps all of this in a Streamlit interface.
+6. `hnsw.py` is a from-scratch implementation of Hierarchical Navigable Small
    World graphs, an approximate nearest-neighbour index, and
    `benchmarks/bench.py` measures it against exact search and FAISS's own HNSW.
 
@@ -47,14 +54,25 @@ pip install -r requirements.txt
 
 ### 1. Add images
 
-Create `data/images/` and drop your images into it. Subdirectories are searched
-recursively. Supported extensions: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`.
+Drop your images into `data/images/`. Subdirectories are searched recursively.
+Supported extensions: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`.
 
 ### 2. Build the index
 
 ```bash
 python src/indexer.py
 ```
+
+After adding, editing or deleting images, update the index instead of
+rebuilding it:
+
+```bash
+python src/indexer.py --update
+```
+
+This embeds only images that are new or have changed (detected by file size
+and modification time) and drops deleted ones, so CLIP runs only on what
+changed. If nothing changed, the model isn't even loaded.
 
 Options:
 
@@ -65,10 +83,25 @@ Options:
 | `--batch-size` | `32` | Images processed per batch |
 | `--model` | `ViT-B-32` | OpenCLIP model architecture |
 | `--pretrained` | `laion2b_s34b_b79k` | OpenCLIP pretrained weights |
+| `--update` | off | Only embed new or changed images and drop deleted ones |
+| `--hnsw` | off | Also build an HNSW index for approximate search |
+| `--hnsw-only` | off | Add an HNSW index to the existing index without re-running CLIP |
+| `--hnsw-m` | `16` | HNSW neighbours per node |
+| `--hnsw-ef-construction` | `200` | HNSW candidate pool size while building |
 
 This writes `images.faiss` and `metadata.json` into the output directory.
 Unreadable or corrupt images are skipped and listed at the end instead of
 stopping the build.
+
+With `--hnsw` or `--hnsw-only`, an `hnsw.pkl` graph is saved alongside them.
+`--update` keeps an existing graph in sync: new images are added to it, and
+since HNSW graphs can't delete nodes, a removal or edit rebuilds the graph from
+the stored vectors (without re-running CLIP). A full rebuild without `--hnsw`
+removes an old graph, since it would no longer match the images.
+
+`--update` falls back to a full rebuild when there's no previous index, when
+the previous index was built with a different model, or when it was built by
+an older version of this project that didn't record file details.
 
 ### 3. Search from the command line
 
@@ -92,20 +125,41 @@ Options:
 | `--image` | — | Query image to find visual matches for |
 | `--top-k` | `5` | Number of results to return |
 | `--index-directory` | `data/index` | Directory holding the index and metadata |
+| `--backend` | `flat` | `flat` for exact search, `hnsw` for approximate search |
+| `--ef-search` | `64` | HNSW candidates examined per query (higher is more accurate, slower) |
 | `--include-self` | off | Keep the query image in results if it is part of the index |
 
 Results are printed as JSON, each entry containing `image_path` and
-`similarity_score` (higher is more similar; 1.0 is an exact match).
+`similarity_score` (higher is more similar; 1.0 is an exact match). The
+index lookup time is printed after the results.
 
-### 4. Search in the browser
+### 4. Find near-duplicates
+
+```bash
+python src/duplicates.py --threshold 0.95
+```
+
+Groups images that are nearly identical, such as resized copies, re-saved
+exports and burst shots. Matches are chained, so if A matches B and B matches
+C, all three land in one group. The output lists each group with every image's
+similarity to the group's first image, and a summary of how many images could
+be removed while keeping one of each. Lower the threshold to find looser
+matches; `1.0` finds only identical images.
+
+No CLIP model is needed: the vectors are read back out of the index.
+
+### 5. Use the web app
 
 ```bash
 streamlit run src/app.py
 ```
 
-The app offers text and image search tabs, shows results as an image grid, and
-lets you adjust the number of results and a minimum similarity score from the
-sidebar.
+The app has three tabs: search by text, search by uploaded image, and find
+duplicates. Results are shown as an image grid. From the sidebar you can set
+the number of results and a minimum similarity score, and reload the index
+after re-running `indexer.py`. If an HNSW index exists, the sidebar also lets
+you switch between exact and approximate search and tune `efSearch`, and each
+search shows how long the index lookup took.
 
 ## Benchmarks
 
@@ -113,8 +167,13 @@ Exact search compares a query against every vector, so its cost grows with the
 collection. HNSW builds a layered proximity graph and searches by walking it,
 touching only a small fraction of the vectors per query. `src/hnsw.py`
 implements it from scratch, following Malkov & Yashunin (2016), including the
-diverse-neighbour selection heuristic. It is used for benchmarking and is not
-yet wired into `search.py`.
+diverse-neighbour selection heuristic. Build it with `indexer.py --hnsw` and
+search with it using `--backend hnsw` or the app's sidebar.
+
+For small collections, exact search is faster: FAISS's flat index is highly
+optimized C++, while `hnsw.py` is pure Python, and a graph only pays off once
+there are too many vectors to compare against each one directly. The benchmark
+shows where that crossover falls for your data.
 
 After building the index, run:
 
@@ -142,45 +201,64 @@ one core), and `--out` (default `benchmarks/results.json`).
 Each query is an indexed image, evaluated leave-one-out: the query is removed
 from its own results, as `search.py` does.
 
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The tests cover the HNSW index (recall against exact search, saving and
+loading, adding in batches), full and incremental indexing, both search
+backends, duplicate grouping, and the Streamlit app, driven headlessly with
+Streamlit's test runner.
+
+They replace CLIP with a lightweight stand-in (`tests/fake_embedder.py`) that
+embeds each image from its pixels, so identical images still get identical
+vectors and edited copies get similar ones. That keeps the suite fast and means
+it runs without PyTorch or downloading model weights. GitHub Actions runs it on
+every push.
+
 ## Project Structure
 
 ```text
 Visual-Similarity-Search/
-├── data/
-│   ├── images/          # your source images (gitignored)
-│   └── index/           # generated FAISS index (gitignored)
+├── .github/workflows/
+│   └── tests.yml        # runs the tests on every push
 ├── benchmarks/
 │   └── bench.py         # compares exact and approximate indexes
+├── data/
+│   ├── images/          # your source images (contents gitignored)
+│   └── index/           # generated index files (contents gitignored)
 ├── src/
 │   ├── __init__.py
 │   ├── app.py           # Streamlit web interface
+│   ├── duplicates.py    # near-duplicate finder
 │   ├── embedder.py      # CLIP embedding engine
 │   ├── hnsw.py          # HNSW index written from scratch
-│   ├── indexer.py       # builds the FAISS index
+│   ├── indexer.py       # builds and updates the index
 │   └── search.py        # queries the index
+├── tests/
+│   ├── conftest.py      # shared fixtures; swaps in the fake embedder
+│   ├── fake_embedder.py # pixel-based stand-in for CLIP
+│   └── test_*.py
+├── pytest.ini
 ├── requirements.txt
+├── requirements-dev.txt
 ├── .gitignore
 └── README.md
 ```
 
-## Status
+## Features
 
-### Implemented
-
-- Image and text embedding generation using OpenCLIP
-- Shared embedding space for text and image comparison
-- L2-normalized vectors for cosine-similarity search
-- Automatic CPU or CUDA device selection
-- Batch image processing with a progress bar
-- Corrupt images skipped during indexing
-- FAISS index construction with image and model metadata
-- Text-to-image and image-to-image search from the command line
-- Interactive Streamlit interface
-- HNSW approximate nearest-neighbour index, implemented from scratch
-- Benchmark of recall, latency, build time and size across exact and HNSW indexes
-
-### Planned
-
-- Option to search with an HNSW index instead of the exact index
-- Incremental index updates without a full rebuild
-- Near-duplicate detection
+- Image and text embedding generation using OpenCLIP, on CPU or CUDA
+- Text-to-image and image-to-image search, from the command line and a
+  Streamlit web app
+- Batch indexing with a progress bar; corrupt images are skipped
+- Incremental index updates that embed only new or changed images
+- Near-duplicate detection with adjustable threshold
+- HNSW approximate nearest-neighbour index, implemented from scratch, selectable
+  as a search backend and kept in sync on updates
+- Benchmark of recall, latency, build time and size across exact and HNSW
+  indexes
+- Test suite that runs without PyTorch, with continuous integration on GitHub

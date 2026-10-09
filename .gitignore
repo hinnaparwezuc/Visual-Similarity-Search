@@ -1,5 +1,18 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep the data folders in the repo, but not their contents.
 data/images/*
 !data/images/.gitkeep
 data/index/*
 !data/index/.gitkeep
 *.faiss
+

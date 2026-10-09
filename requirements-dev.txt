@@ -1,0 +1,8 @@
+# Everything needed to run the tests. PyTorch and OpenCLIP are left out
+# on purpose: the tests use a lightweight stand-in for the CLIP embedder.
+faiss-cpu>=1.7.4
+numpy>=1.24.0
+Pillow>=10.0.0
+tqdm>=4.66.0
+streamlit>=1.50.0
+pytest>=8.0.0
