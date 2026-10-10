@@ -121,27 +121,46 @@ class ImageSearchEngine:
         exclude_self: bool = True,
         backend: str = "flat",
         ef_search: int | None = None,
+        exclude_above: float | None = None,
     ) -> list[dict]:
         """Find images that are visually similar to a query image.
 
-        If the query image is itself part of the index, it is left out of
-        the results (it would always be the top match with score 1.0).
+        exclude_self   leave out the query file itself if it is indexed
+                       (it would always be the top match with score 1.0)
+        exclude_above  leave out every result scoring at or above this, e.g.
+                       0.999 to hide identical copies of an uploaded image
+
+        Filtered results are replaced, so up to top_k are still returned
+        however many are left out.
         """
         if not image_path.exists():
             raise FileNotFoundError(f"Query image not found: {image_path}")
 
         query_embedding = self.embedder.encode_images([image_path])
-
-        if not exclude_self:
-            return self._search(query_embedding, top_k, backend, ef_search)
-
         query_resolved = image_path.resolve()
-        results = self._search(query_embedding, top_k + 1, backend, ef_search)
-        results = [
-            r for r in results
-            if self._resolve(r["image_path"]) != query_resolved
-        ]
-        return results[:top_k]
+
+        def keep(result: dict) -> bool:
+            if exclude_above is not None and result["similarity_score"] >= exclude_above:
+                return False
+            if exclude_self and self._resolve(result["image_path"]) == query_resolved:
+                return False
+            return True
+
+        # Ask for a few extra, and widen the search until enough survive the
+        # filters. The image is embedded only once; each retry is just
+        # another index lookup.
+        fetch = top_k + 1
+        total_ms = 0.0
+        while True:
+            results = self._search(query_embedding, fetch, backend, ef_search)
+            total_ms += self.last_search_ms
+            kept = [r for r in results if keep(r)]
+            if len(kept) >= top_k or fetch >= self.index.ntotal:
+                break
+            fetch = min(self.index.ntotal, fetch * 2)
+
+        self.last_search_ms = total_ms
+        return kept[:top_k]
 
     def _search(
         self,

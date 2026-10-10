@@ -21,8 +21,10 @@ approximate nearest-neighbour index implemented from scratch.
   are re-embedded
 - **Near-duplicate detection** for resized copies, re-saved exports and burst
   shots
-- **Streamlit web app** for text search, image search and duplicate finding
-- **67 automated tests** run on every push with GitHub Actions, without
+- **REST API** (FastAPI) with its own search page and interactive docs, plus
+  a **Streamlit web app**, for text search, image search and duplicate finding
+- **Runs in Docker** with one command: `docker compose up`
+- **96 automated tests** run on every push with GitHub Actions, without
   needing PyTorch or model downloads
 
 ## Quick Start
@@ -46,6 +48,13 @@ Or search from the command line:
 python src/search.py --text "a dog running on the beach" --top-k 5
 ```
 
+Or run everything in Docker, with no Python setup (see [Docker](#7-run-in-docker)):
+
+```bash
+docker compose run --rm api python src/indexer.py --hnsw   # index data/images
+docker compose up --build                                  # search page on :8000, app on :8501
+```
+
 ## How It Works
 
 CLIP maps images and text into the same numerical embedding space, so
@@ -63,7 +72,8 @@ together. Searching is then just a nearest-neighbour lookup.
    returns ranked results.
 4. `duplicates.py` compares every indexed image against every other and groups
    the ones above a similarity threshold.
-5. `app.py` wraps all of this in a Streamlit interface.
+5. `app.py` wraps all of this in a Streamlit interface, and `api.py` exposes
+   it as a REST API with a lightweight search page of its own.
 6. `hnsw.py` is a from-scratch implementation of Hierarchical Navigable Small
    World graphs, an approximate nearest-neighbour index, and
    `benchmarks/bench.py` measures it against exact search and FAISS's own HNSW.
@@ -272,6 +282,85 @@ after re-running `indexer.py`. If an HNSW index exists, the sidebar also lets
 you switch between exact and approximate search and tune `efSearch`, and each
 search shows how long the index lookup took.
 
+### 6. Use the REST API
+
+```bash
+uvicorn src.api:app --reload        # or: python src/api.py
+```
+
+Open <http://localhost:8000> for a search page built on the API: describe a
+photo, upload one, or find duplicates, with results in a grid you can click to
+enlarge. Developers can open <http://localhost:8000/docs> for interactive
+documentation where every endpoint can be tried in the browser. The API serves
+the index in `data/index`; set the `INDEX_DIRECTORY` environment variable to
+serve another.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Index status: image count, model, whether HNSW is available |
+| `POST` | `/search/text` | Search by description |
+| `POST` | `/search/image` | Search by uploaded image (multipart form) |
+| `GET` | `/images/{image_id}` | Fetch a result image |
+| `GET` | `/duplicates?threshold=0.95` | Groups of near-identical images |
+
+```bash
+curl -X POST localhost:8000/search/text \
+     -H "Content-Type: application/json" \
+     -d '{"query": "a dog running on the beach", "top_k": 3, "backend": "hnsw"}'
+```
+
+The response looks like this (shortened to one result):
+
+```json
+{
+  "results": [
+    {
+      "image_id": 42,
+      "image_path": "data/images/beach_dog.jpg",
+      "image_url": "/images/42",
+      "similarity_score": 0.3121
+    }
+  ],
+  "backend": "hnsw",
+  "lookup_ms": 0.21
+}
+```
+
+Each result's `image_url` points back at the API, which serves images by id
+rather than by path, so only indexed files can ever be fetched. Image search
+accepts `top_k`, `backend`, `ef_search` and `exclude_exact` (default true,
+which hides identical copies of the uploaded image) as form fields. Requests
+are validated: bad input gets a `422` describing what's wrong, an unreadable
+upload a `400`, and an upload over 20 MB a `413`. If no index exists yet, the
+API still starts, and `/health` and searches return `503` with instructions.
+
+### 7. Run in Docker
+
+The repository includes a `Dockerfile` and `docker-compose.yml`. The image
+is CPU-only, runs as a non-root user, and has the CLIP weights built in, so
+containers start without downloading anything. Your images and index stay on
+your machine in `data/`, which is mounted into the containers.
+
+```bash
+docker compose run --rm api python src/indexer.py --hnsw   # build the index
+docker compose up --build
+```
+
+This starts the search page at <http://localhost:8000> (API docs at
+<http://localhost:8000/docs>) and the Streamlit app at <http://localhost:8501>. The first build takes a while, mostly downloading
+PyTorch and the model. The API container reports healthy once an index is
+loaded.
+
+To serve a different index, such as the [benchmark dataset](#reproducing-the-results):
+
+```bash
+INDEX_DIRECTORY=/app/data/benchmark/index docker compose up
+```
+
+On Windows Command Prompt, run `set INDEX_DIRECTORY=/app/data/benchmark/index`
+first, then `docker compose up`. Indexes work in the container as long as
+their images are inside the project's `data/` folder.
+
 ## Testing
 
 ```bash
@@ -281,7 +370,8 @@ pytest
 
 The tests cover the HNSW index (recall against exact search, saving and
 loading, adding in batches), full and incremental indexing, both search
-backends, duplicate grouping, and the Streamlit app, driven headlessly with
+backends, duplicate grouping, every REST API endpoint including validation
+and error responses, and the Streamlit app, driven headlessly with
 Streamlit's test runner.
 
 They replace CLIP with a lightweight stand-in (`tests/fake_embedder.py`) that
@@ -308,6 +398,9 @@ Visual-Similarity-Search/
 │   └── benchmark/       # benchmark dataset and index (gitignored)
 ├── src/
 │   ├── __init__.py
+│   ├── api.py           # REST API (FastAPI)
+│   ├── static/
+│   │   └── index.html   # search page served by the API
 │   ├── app.py           # Streamlit web interface
 │   ├── duplicates.py    # near-duplicate finder
 │   ├── embedder.py      # CLIP embedding engine
@@ -318,10 +411,13 @@ Visual-Similarity-Search/
 │   ├── conftest.py      # shared fixtures; swaps in the fake embedder
 │   ├── fake_embedder.py # pixel-based stand-in for CLIP
 │   └── test_*.py
+├── Dockerfile
+├── docker-compose.yml   # API + web app with one command
 ├── pytest.ini
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── LICENSE
+├── .dockerignore
 ├── .gitignore
 └── README.md
 ```

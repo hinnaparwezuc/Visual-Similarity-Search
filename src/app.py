@@ -201,21 +201,18 @@ with image_tab:
             try:
                 with st.spinner("Searching..."):
                     # Uploads arrive as temp files, so the path-based
-                    # self-match filter in search.py can't recognize them.
-                    # Fetch one extra and drop near-perfect scores instead.
+                    # self-match filter can't recognize them. Drop
+                    # near-perfect scores instead.
                     results = search_engine.search_image(
                         temporary_path,
-                        top_k + 1 if hide_exact else top_k,
+                        top_k,
+                        exclude_self=False,
                         backend=backend,
                         ef_search=ef_search,
+                        exclude_above=EXACT_MATCH_THRESHOLD if hide_exact else None,
                     )
                 show_timing(search_engine, backend)
-                if hide_exact:
-                    results = [
-                        r for r in results
-                        if r["similarity_score"] < EXACT_MATCH_THRESHOLD
-                    ]
-                render_results(results[:top_k], min_score)
+                render_results(results, min_score)
             finally:
                 temporary_path.unlink(missing_ok=True)
 

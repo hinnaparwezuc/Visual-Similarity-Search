@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
 
@@ -124,3 +125,21 @@ def test_command_line(engine, index_directory, image_directory, capsys, monkeypa
     results = json.loads(output.out)
     assert len(results) == 2
     assert "hnsw index lookup" in output.err
+
+
+def test_exclude_above_still_returns_top_k_with_several_copies(
+    image_directory, index_directory
+):
+    """Regression: hiding identical copies used to fetch only one spare
+    result, so two copies left the caller with fewer results than asked."""
+    original = image_directory / "dogs" / "image0.png"
+    for name in ("copy_a.png", "copy_b.png", "copy_c.png"):
+        shutil.copy(original, image_directory / name)
+    indexer.build_index(image_directory, index_directory, with_hnsw=True)
+    engine = ImageSearchEngine(index_directory)
+
+    for backend in ("flat", "hnsw"):
+        results = engine.search_image(original, top_k=5, exclude_self=False,
+                                      backend=backend, exclude_above=0.999)
+        assert len(results) == 5
+        assert all(r["similarity_score"] < 0.999 for r in results)

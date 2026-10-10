@@ -1,0 +1,37 @@
+# docker compose up --build
+#   REST API + interactive docs: http://localhost:8000/docs
+#   Web app:                     http://localhost:8501
+#
+# Build an index first, either on your machine or in a container:
+#   docker compose run --rm api python src/indexer.py --hnsw
+#
+# Serve a different index, e.g. the benchmark dataset:
+#   INDEX_DIRECTORY=/app/data/benchmark/index docker compose up
+#   (Windows cmd: set INDEX_DIRECTORY=/app/data/benchmark/index, then docker compose up)
+
+services:
+  api:
+    build: .
+    image: visual-similarity-search
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      INDEX_DIRECTORY: ${INDEX_DIRECTORY:-/app/data/index}
+
+  app:
+    image: visual-similarity-search
+    depends_on:
+      - api
+    command: >
+      streamlit run src/app.py
+      --server.address 0.0.0.0
+      --server.port 8501
+      --server.headless true
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      disable: true
