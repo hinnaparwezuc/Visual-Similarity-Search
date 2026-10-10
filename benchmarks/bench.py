@@ -10,6 +10,8 @@ Reports per index:
   recall_at_k      agreement with exact search — index fidelity
   label_acc_at_k   queries with a same-folder hit in the top-k — search
                    usefulness (only when images sit in class subfolders)
+  label_prec_at_k  share of the top-k results from the query's folder —
+                   a stricter usefulness measure than label_acc_at_k
   p50_ms / p95_ms  per-query search latency
 
 USAGE
@@ -213,6 +215,19 @@ def label_accuracy(got, query_ids, labels):
     return ok / len(query_ids)
 
 
+def label_precision(got, query_ids, labels):
+    """Share of all returned results that match the query's class. Stricter
+    than label_accuracy, which is satisfied by a single match in the top-k
+    and so creeps towards 1.0 as k grows."""
+    matches = total = 0
+    for ids, qid in zip(got, query_ids):
+        for i in ids:
+            if i != qid and i >= 0:
+                total += 1
+                matches += labels[i] == labels[qid]
+    return matches / total if total else 0.0
+
+
 def benchmark(index, db, query_ids, k, truth, labels=None, warmup=5):
     # tracemalloc was used here before, but it only sees Python-side
     # allocations: FAISS builds in C++, so every FAISS row read 0 MB. The
@@ -254,6 +269,9 @@ def benchmark(index, db, query_ids, k, truth, labels=None, warmup=5):
         out["label_acc_at_k"] = round(
             label_accuracy(results, query_ids, labels), 4
         )
+        out["label_prec_at_k"] = round(
+            label_precision(results, query_ids, labels), 4
+        )
     return out
 
 
@@ -263,7 +281,7 @@ def benchmark(index, db, query_ids, k, truth, labels=None, warmup=5):
 
 def print_table(rows):
     cols = ["index", "build_time_s", "index_mb", "recall_at_k",
-            "label_acc_at_k", "p50_ms", "p95_ms"]
+            "label_acc_at_k", "label_prec_at_k", "p50_ms", "p95_ms"]
     cols = [c for c in cols if any(c in r for r in rows)]
     width = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows))
              for c in cols}

@@ -170,36 +170,88 @@ implements it from scratch, following Malkov & Yashunin (2016), including the
 diverse-neighbour selection heuristic. Build it with `indexer.py --hnsw` and
 search with it using `--backend hnsw` or the app's sidebar.
 
-For small collections, exact search is faster: FAISS's flat index is highly
-optimized C++, while `hnsw.py` is pure Python, and a graph only pays off once
-there are too many vectors to compare against each one directly. The benchmark
-shows where that crossover falls for your data.
+### Results
 
-After building the index, run:
+Measured on the [Oxford-IIIT Pet dataset](https://www.robots.ox.ac.uk/~vgg/data/pets/):
+7,390 photos of 37 cat and dog breeds, embedded with CLIP ViT-B-32 (512
+dimensions). 500 queries, k = 10, on a Windows laptop CPU with FAISS limited
+to one thread. Raw numbers are in [`benchmarks/results.json`](benchmarks/results.json).
+
+| Index | Recall@10 | Same-breed precision@10 | Median latency | p95 latency | Build time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| NumPy, exact | 1.000 | 0.807 | 0.56 ms | 0.82 ms | — |
+| FAISS `IndexFlatIP`, exact | 1.000 | 0.807 | 0.89 ms | 1.98 ms | 0.01 s |
+| FAISS HNSW, efSearch 16 | 0.991 | 0.808 | 0.03 ms | 0.04 ms | 1.7 s |
+| FAISS HNSW, efSearch 64 | 0.999 | 0.807 | 0.08 ms | 0.20 ms | 1.2 s |
+| FAISS HNSW, efSearch 256 | 1.000 | 0.807 | 0.30 ms | 0.59 ms | 1.2 s |
+| **`hnsw.py`, efSearch 16** | **0.999** | **0.808** | **0.24 ms** | **0.61 ms** | **81 s** |
+| `hnsw.py`, efSearch 64 | 1.000 | 0.807 | 0.60 ms | 1.07 ms | 81 s |
+| `hnsw.py`, efSearch 256 | 1.000 | 0.807 | 2.63 ms | 5.64 ms | 81 s |
+
+What the numbers show:
+
+- **The from-scratch HNSW beats exact search at this size.** At efSearch 16,
+  `hnsw.py` returns 99.9% of the true top 10 while running 2.4× faster than
+  exact NumPy search and 3.8× faster than FAISS's exact index, despite being
+  pure Python competing with optimized native code.
+- **Python costs about 3× at query time and 50–65× at build time.** At matched
+  recall (≥ 0.999), FAISS's C++ HNSW answers in 0.08 ms against 0.24 ms for
+  `hnsw.py`. Building the graph is where Python hurts most: 81 s versus under
+  2 s, because every insertion runs a search through the graph in the
+  interpreter.
+- **efSearch is the accuracy/speed dial, and 16 is already enough here.**
+  Raising it from 16 to 256 makes `hnsw.py` 11× slower for a recall gain of
+  less than 0.1%.
+- **CLIP finds the right breed without any training.** 81% of each query's 10
+  nearest neighbours are the same breed (random chance would be 2.7%), and
+  99.4% of queries have at least one same-breed match. Approximate search
+  barely affects this: even the fastest setting (FAISS HNSW at efSearch 16)
+  misses under 1% of the exact results, and same-breed precision doesn't drop.
+- **The graph has the shape the paper predicts.** Its 4 layers hold 7,390,
+  474, 31 and 3 nodes. Each of the lower layers keeps about 1/16 of the one below, which is
+  1/M for M = 16, the result of the level-assignment rule the paper derives.
+- **The graph is cheap to store.** The full `hnsw.py` index is 15.9 MB against
+  15.1 MB for the raw vectors alone.
+
+One caveat on the exact baselines: NumPy's matrix multiply can use several CPU
+cores through its BLAS library, while FAISS was held to one thread, which is
+why exact NumPy edges out exact FAISS here.
+
+### Reproducing the results
 
 ```bash
-python benchmarks/bench.py
+python benchmarks/prepare_pets.py      # downloads ~790 MB, sorts into breed folders
+python src/indexer.py --images data/benchmark/images --output data/benchmark/index
+python benchmarks/bench.py --index-directory data/benchmark/index --k 10 --queries 500
 ```
 
-The benchmark reads the stored embeddings back out of `data/index`, so CLIP does
+`prepare_pets.py` streams the dataset archive straight into
+`data/benchmark/images/<breed>/`, so the archive itself is never saved. Pass
+`--per-breed 50` for a smaller, faster run. The folder names give the
+benchmark its ground-truth labels.
+
+The benchmark reads the stored embeddings back out of the index, so CLIP does
 not run again. It compares four approaches on the same queries: exact search in
 NumPy, FAISS `IndexFlatIP` (what this project uses), FAISS `IndexHNSWFlat`, and
-`hnsw.py`, sweeping the `efSearch` setting for both HNSW indexes.
+`hnsw.py`, sweeping the `efSearch` setting for both HNSW indexes. Each query is
+an indexed image, evaluated leave-one-out: the query is removed from its own
+results, as `search.py` does. Point it at any index; the default is
+`data/index`.
 
 | Column | Meaning |
 | --- | --- |
 | `build_time_s` | Time to build the index from the embeddings |
 | `index_mb` | Serialized size of the finished index |
 | `recall_at_k` | Share of the exact top-k the index returned (fidelity to exact search) |
-| `label_acc_at_k` | Share of queries with a same-folder image in the top-k (only when images sit in class subfolders) |
+| `label_acc_at_k` | Share of queries with at least one same-folder image in the top-k |
+| `label_prec_at_k` | Share of all top-k results from the query's folder (stricter) |
 | `p50_ms` / `p95_ms` | Median and 95th-percentile query latency |
+
+The two label columns appear only when images sit in class subfolders.
 
 Options: `--queries` (default 200), `--k` (default 3), `--ef-search` (default
 `16 64 256`), `--threads` (FAISS threads, default 1 so all indexes are timed on
 one core), and `--out` (default `benchmarks/results.json`).
-
-Each query is an indexed image, evaluated leave-one-out: the query is removed
-from its own results, as `search.py` does.
 
 ## Testing
 
@@ -226,10 +278,13 @@ Visual-Similarity-Search/
 ├── .github/workflows/
 │   └── tests.yml        # runs the tests on every push
 ├── benchmarks/
-│   └── bench.py         # compares exact and approximate indexes
+│   ├── bench.py         # compares exact and approximate indexes
+│   ├── prepare_pets.py  # downloads the labeled benchmark dataset
+│   └── results.json     # latest benchmark results
 ├── data/
 │   ├── images/          # your source images (contents gitignored)
-│   └── index/           # generated index files (contents gitignored)
+│   ├── index/           # generated index files (contents gitignored)
+│   └── benchmark/       # benchmark dataset and index (gitignored)
 ├── src/
 │   ├── __init__.py
 │   ├── app.py           # Streamlit web interface
@@ -259,6 +314,6 @@ Visual-Similarity-Search/
 - Near-duplicate detection with adjustable threshold
 - HNSW approximate nearest-neighbour index, implemented from scratch, selectable
   as a search backend and kept in sync on updates
-- Benchmark of recall, latency, build time and size across exact and HNSW
-  indexes
+- Benchmark of recall, search quality, latency, build time and size across
+  exact and HNSW indexes on a 7,390-image labeled dataset
 - Test suite that runs without PyTorch, with continuous integration on GitHub

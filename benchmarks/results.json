@@ -1,0 +1,82 @@
+[
+  {
+    "index": "numpy flat (exact)",
+    "build_time_s": 0.0,
+    "index_mb": 15.13,
+    "recall_at_k": 1.0,
+    "p50_ms": 0.562,
+    "p95_ms": 0.824,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.8074
+  },
+  {
+    "index": "faiss IndexFlatIP",
+    "build_time_s": 0.006,
+    "index_mb": 15.13,
+    "recall_at_k": 1.0,
+    "p50_ms": 0.891,
+    "p95_ms": 1.982,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.8074
+  },
+  {
+    "index": "faiss HNSW (efS=16)",
+    "build_time_s": 1.709,
+    "index_mb": 16.2,
+    "recall_at_k": 0.9906,
+    "p50_ms": 0.029,
+    "p95_ms": 0.042,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.8078
+  },
+  {
+    "index": "faiss HNSW (efS=64)",
+    "build_time_s": 1.238,
+    "index_mb": 16.2,
+    "recall_at_k": 0.9994,
+    "p50_ms": 0.078,
+    "p95_ms": 0.196,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.8074
+  },
+  {
+    "index": "faiss HNSW (efS=256)",
+    "build_time_s": 1.231,
+    "index_mb": 16.2,
+    "recall_at_k": 0.9998,
+    "p50_ms": 0.299,
+    "p95_ms": 0.587,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.8074
+  },
+  {
+    "index": "hnsw.py (efS=16)",
+    "build_time_s": 81.466,
+    "index_mb": 15.91,
+    "recall_at_k": 0.9992,
+    "p50_ms": 0.237,
+    "p95_ms": 0.613,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.808
+  },
+  {
+    "index": "hnsw.py (efS=64)",
+    "build_time_s": 81.466,
+    "index_mb": 15.91,
+    "recall_at_k": 1.0,
+    "p50_ms": 0.602,
+    "p95_ms": 1.072,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.8074
+  },
+  {
+    "index": "hnsw.py (efS=256)",
+    "build_time_s": 81.466,
+    "index_mb": 15.91,
+    "recall_at_k": 1.0,
+    "p50_ms": 2.631,
+    "p95_ms": 5.635,
+    "label_acc_at_k": 0.994,
+    "label_prec_at_k": 0.8074
+  }
+]

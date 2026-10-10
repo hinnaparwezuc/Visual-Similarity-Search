@@ -16,3 +16,6 @@ data/index/*
 !data/index/.gitkeep
 *.faiss
 
+
+# Benchmark dataset from benchmarks/prepare_pets.py
+data/benchmark/
