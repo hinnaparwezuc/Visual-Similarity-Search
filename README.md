@@ -347,9 +347,16 @@ docker compose up --build
 ```
 
 This starts the search page at <http://localhost:8000> (API docs at
-<http://localhost:8000/docs>) and the Streamlit app at <http://localhost:8501>. The first build takes a while, mostly downloading
-PyTorch and the model. The API container reports healthy once an index is
-loaded.
+<http://localhost:8000/docs>) and the Streamlit app at <http://localhost:8501>.
+The first build takes about 3 to 5 minutes, mostly downloading PyTorch and the
+CLIP model; later starts take seconds. The API container reports healthy once
+an index is loaded. Tested on Windows 11 with Docker Desktop (WSL2 backend).
+
+If the build sits on an "unpacking" step for many minutes on Docker Desktop,
+turn off **Settings → General → Use containerd for pulling and storing
+images** and build again. With that image store, the multi-gigabyte image was
+unpacked a second time after building, which took over 25 minutes and stalled
+WSL; with it off, the whole build finished in about 3.
 
 To serve a different index, such as the [benchmark dataset](#reproducing-the-results):
 
